@@ -1,1 +1,1 @@
-# islomuz
+# islom.uz
