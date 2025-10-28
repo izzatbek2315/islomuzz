@@ -407,6 +407,138 @@ def send_weekly_calendar(chat_id, city):
         bot.send_message(chat_id, f"Xatolik yuzaga keldi: {e}")
 
 
+# Ehson tugmasi bosilganda ishlaydigan funksiya
+# --- Ehson uchun baza yaratish ---
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS cards (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT,          -- Uzcard / Humo
+        card_number TEXT,
+        owner_name TEXT
+    )
+''')
+conn.commit()
+
+
+# --- Ehson tugmasi ---
+@bot.message_handler(func=lambda message: message.text == "Ehson")
+def handle_ehson(message):
+    cursor.execute("SELECT type, card_number, owner_name FROM cards")
+    cards = cursor.fetchall()
+
+    if not cards:
+        ehson_text = (
+            "🤲 <b>Ehson qilish — savobli amal!</b>\n\n"
+            "Hozircha karta ma’lumotlari mavjud emas.\n\n"
+            "📞 Savollaringiz bo‘lsa, “<b>Admin bilan aloqa</b>” tugmasini bosing."
+        )
+    else:
+        card_texts = []
+        for c in cards:
+            card_texts.append(f"💳 <b>{c[0]}</b>: <code>{c[1]}</code>\n👤 {c[2]}")
+        cards_str = "\n\n".join(card_texts)
+        ehson_text = (
+            "🤲 <b>Ehson qilish — savobli amal!</b>\n\n"
+            "Alloh taolo aytadi:\n"
+            "<i>“Kim Alloh yo‘lida molini sarf qilsa, u yetti boshoqli urug‘dek bo‘ladi. "
+            "Har boshoqda yuzta urug‘ bo‘lur.”</i> 🌾 (Baqara, 261)\n\n"
+            f"{cards_str}\n\n"
+            "🕊 <i>Ehsoningiz Alloh yo‘lida qabul bo‘lsin!</i>"
+        )
+
+    markup = None
+    # Faqat admin uchun tahrirlash tugmasi
+    if message.chat.id in ADMIN_IDS:
+        markup = types.InlineKeyboardMarkup()
+        markup.add(
+            types.InlineKeyboardButton("✏️ Tahrirlash", callback_data="edit_cards")
+        )
+
+    bot.send_message(message.chat.id, ehson_text, parse_mode="HTML", reply_markup=markup)
+
+
+# --- Admin uchun karta tahrirlash menyusi ---
+@bot.callback_query_handler(func=lambda call: call.data == "edit_cards")
+def edit_cards_menu(call):
+    if call.message.chat.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ Sizga ruxsat yo‘q.", show_alert=True)
+        return
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("➕ Karta qo‘shish", callback_data="add_card"),
+        types.InlineKeyboardButton("🗑 O‘chirish", callback_data="delete_card")
+    )
+    bot.send_message(call.message.chat.id, "💳 Karta tahrirlash bo‘limi:", reply_markup=markup)
+
+
+# --- Karta qo‘shish ---
+@bot.callback_query_handler(func=lambda call: call.data == "add_card")
+def add_card(call):
+    if call.message.chat.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ Ruxsat yo‘q.")
+        return
+    msg = bot.send_message(call.message.chat.id, "🔹 Karta turini kiriting (Uzcard yoki Humo):")
+    bot.register_next_step_handler(msg, add_card_type)
+
+
+def add_card_type(message):
+    card_type = message.text.strip().capitalize()
+    if card_type not in ["Uzcard", "Humo"]:
+        msg = bot.send_message(message.chat.id, "❌ Noto‘g‘ri tur. Faqat Uzcard yoki Humo kiriting:")
+        bot.register_next_step_handler(msg, add_card_type)
+        return
+
+    msg = bot.send_message(message.chat.id, "💳 Karta raqamini kiriting:")
+    bot.register_next_step_handler(msg, add_card_number, card_type)
+
+
+def add_card_number(message, card_type):
+    card_number = message.text.strip().replace(" ", "")
+    if not card_number.isdigit() or len(card_number) < 12:
+        msg = bot.send_message(message.chat.id, "❌ Noto‘g‘ri karta raqami. Qayta kiriting:")
+        bot.register_next_step_handler(msg, add_card_number, card_type)
+        return
+
+    msg = bot.send_message(message.chat.id, "👤 Karta egasining ismini kiriting:")
+    bot.register_next_step_handler(msg, save_new_card, card_type, card_number)
+
+
+def save_new_card(message, card_type, card_number):
+    owner_name = message.text.strip()
+    cursor.execute("INSERT INTO cards (type, card_number, owner_name) VALUES (?, ?, ?)", (card_type, card_number, owner_name))
+    conn.commit()
+    bot.send_message(message.chat.id, f"✅ <b>{card_type}</b> kartasi saqlandi!", parse_mode="HTML")
+
+
+# --- Karta o‘chirish ---
+@bot.callback_query_handler(func=lambda call: call.data == "delete_card")
+def delete_card(call):
+    if call.message.chat.id not in ADMIN_IDS:
+        bot.answer_callback_query(call.id, "⛔ Ruxsat yo‘q.")
+        return
+
+    cursor.execute("SELECT id, type, card_number FROM cards")
+    cards = cursor.fetchall()
+    if not cards:
+        bot.send_message(call.message.chat.id, "🗑 Hozircha o‘chirish uchun karta yo‘q.")
+        return
+
+    markup = types.InlineKeyboardMarkup()
+    for c in cards:
+        markup.add(types.InlineKeyboardButton(f"❌ {c[0]}. {c[0]} {c[1]} ({c[2][-4:]})", callback_data=f"delete_{c[0]}"))
+    bot.send_message(call.message.chat.id, "Qaysi kartani o‘chirmoqchisiz?", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("delete_"))
+def confirm_delete_card(call):
+    if call.message.chat.id not in ADMIN_IDS:
+        return
+    card_id = int(call.data.split("_")[1])
+    cursor.execute("DELETE FROM cards WHERE id = ?", (card_id,))
+    conn.commit()
+    bot.answer_callback_query(call.id, "✅ O‘chirildi.", show_alert=True)
+    bot.send_message(call.message.chat.id, f"🗑 Karta ID {card_id} muvaffaqiyatli o‘chirildi.")
 
 # Info tugmasi bosilganda ishlaydigan funksiya
 @bot.message_handler(func=lambda message: message.text == "Info")
@@ -424,29 +556,11 @@ def show_info(message):
         "✅ WebApp orqali islomiy sahifalarga kirish\n\n"
         "👨‍💻 <b>Muallif:</b> <a href='https://t.me/izzatbek_ibrohimov'>Ibrohimov Izzatbek</a>\n"
         "📞 <i>Telefon:</i> +998 90 298 37 01\n\n"
-        "🔗 <b>Manba:<a href='https://namoz-vaqtlari-islomuz.netlify.app'>Islom_uz/a>\n\n"
+        "🔗 <b>Manba:</b> <a href='https://namoz-vaqtlari-islomuz.netlify.app'>Islom_uz</a>\n\n"
         "🤲 <i>Alloh sizni doimo o‘z panohida asrasin!</i>"
     )
 
     bot.send_message(message.chat.id, info_message, parse_mode="HTML")
-
-
-# Ehson tugmasi bosilganda ishlaydigan funksiya
-@bot.message_handler(func=lambda message: message.text == "Ehson")
-def handle_ehson(message):
-    ehson_message = (
-        "🤲 <b>Ehson qilish — savobli amal!</b>\n\n"
-        "Alloh taolo aytadi:\n"
-        "<i>“Kim Alloh yo‘lida molini sarf qilsa, u yetti boshoqli urug‘dek bo‘ladi. "
-        "Har boshoqda yuzta urug‘ bo‘lur.”</i> 🌾 (Baqara, 261)\n\n"
-        "Siz quyidagi hisob raqamlariga ehson qilishingiz mumkin:\n\n"
-        "💳 <b>Uzcard:</b> <code>8600 1234 5678 9012</code>\n"
-        "💳 <b>Humo:</b> <code>9860 5678 1234 5678</code>\n\n"
-        "📞 Agar savollaringiz bo‘lsa, “<b>Admin bilan aloqa</b>” tugmasini bosing.\n\n"
-        "🕊 <i>Ehsoningiz Alloh yo‘lida qabul bo‘lsin!</i>"
-    )
-
-    bot.send_message(message.chat.id, ehson_message, parse_mode="HTML")
 
 # Help buyrug'iga javob berish uchun funksiya
 @bot.message_handler(commands=['help'])
@@ -683,10 +797,6 @@ def islamic_auto_reply(message):
         reply = random.choice(responses["unknown"])
 
     bot.reply_to(message, reply)
-
-
-
-
 
 # Botni ishga tushirish
 import time
